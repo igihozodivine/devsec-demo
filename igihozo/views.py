@@ -22,6 +22,7 @@ from django.urls import reverse_lazy
 from django.views.generic import FormView, TemplateView
 
 from .redirects import DEFAULT_POST_AUTH_REDIRECT, get_safe_redirect, get_safe_redirect_for_template
+from .audit import hash_identifier, log_security_event
 from .authz import user_is_privileged
 from .forms import (
     AccountUpdateForm,
@@ -51,6 +52,7 @@ class RegisterView(FormView):
     def form_valid(self, form):
         user = form.save()
         login(self.request, user)
+        log_security_event("registration", request=self.request, actor=user, target_user=user)
         messages.success(self.request, "Your account has been created and you are now signed in.")
         return super().form_valid(form)
 
@@ -77,6 +79,13 @@ class UserLoginView(LoginView):
 
     def post(self, request, *args, **kwargs):
         if self.throttle_state["is_blocked"]:
+            log_security_event(
+                "login_failure",
+                request=request,
+                actor_username=self.login_identifier,
+                outcome="blocked",
+                details={"reason": "temporary_cooldown"},
+            )
             form = self.get_form()
             form.add_error(
                 None,
@@ -92,12 +101,20 @@ class UserLoginView(LoginView):
 
     def form_valid(self, form):
         clear_login_throttle(self.login_identifier or form.get_user().get_username(), self.client_ip)
+        log_security_event("login_success", request=self.request, actor=form.get_user(), target_user=form.get_user())
         messages.success(self.request, "Welcome back. You have signed in successfully.")
         return super().form_valid(form)
 
     def form_invalid(self, form):
         if self.request.method == "POST" and not self.throttle_state["is_blocked"]:
             register_failed_login(self.login_identifier, self.client_ip)
+            log_security_event(
+                "login_failure",
+                request=self.request,
+                actor_username=self.login_identifier,
+                outcome="failure",
+                details={"reason": "invalid_credentials"},
+            )
         return super().form_invalid(form)
 
     def get_success_url(self):
@@ -118,6 +135,8 @@ class UserLogoutView(TemplateView):
 
     def post(self, request, *args, **kwargs):
         safe_redirect = get_safe_redirect(request, fallback_url="")
+        if request.user.is_authenticated:
+            log_security_event("logout", request=request, actor=request.user, target_user=request.user)
         logout(request)
         if safe_redirect:
             return redirect(safe_redirect)
@@ -202,6 +221,13 @@ class ProfileEditView(OwnedProfileAccessMixin, FormView):
 
     def form_valid(self, form):
         form.save()
+        log_security_event(
+            "profile_update",
+            request=self.request,
+            actor=self.request.user,
+            target_user=self.target_user,
+            details={"via": "form"},
+        )
         if self.target_user.pk == self.request.user.pk:
             messages.success(self.request, "Your profile has been updated.")
         else:
@@ -237,6 +263,13 @@ class ProfileAjaxUpdateView(OwnedProfileAccessMixin, FormView):
 
     def form_valid(self, form):
         form.save()
+        log_security_event(
+            "profile_update",
+            request=self.request,
+            actor=self.request.user,
+            target_user=self.target_user,
+            details={"via": "ajax"},
+        )
         return JsonResponse(
             {
                 "status": "ok",
@@ -261,6 +294,12 @@ class UserPasswordChangeView(LoginRequiredMixin, PasswordChangeView):
     login_url = reverse_lazy("igihozo:login")
 
     def form_valid(self, form):
+        log_security_event(
+            "password_changed",
+            request=self.request,
+            actor=self.request.user,
+            target_user=self.request.user,
+        )
         messages.success(self.request, "Your password has been updated.")
         return super().form_valid(form)
 
@@ -277,6 +316,16 @@ class UserPasswordResetView(PasswordResetView):
     success_url = reverse_lazy("igihozo:password_reset_done")
     form_class = StyledPasswordResetForm
 
+    def form_valid(self, form):
+        log_security_event(
+            "password_reset_requested",
+            request=self.request,
+            actor_username=None,
+            outcome="accepted",
+            details={"submitted_email_hash": hash_identifier(form.cleaned_data["email"])},
+        )
+        return super().form_valid(form)
+
 
 class UserPasswordResetDoneView(PasswordResetDoneView):
     template_name = "igihozo/password_reset_done.html"
@@ -286,6 +335,27 @@ class UserPasswordResetConfirmView(PasswordResetConfirmView):
     template_name = "igihozo/password_reset_confirm.html"
     success_url = reverse_lazy("igihozo:password_reset_complete")
     form_class = StyledSetPasswordForm
+
+    def dispatch(self, request, *args, **kwargs):
+        response = super().dispatch(request, *args, **kwargs)
+        context_data = getattr(response, "context_data", {})
+        if context_data.get("validlink") is False:
+            log_security_event(
+                "password_reset_invalid_link",
+                request=request,
+                outcome="rejected",
+            )
+        return response
+
+    def form_valid(self, form):
+        user = form.user
+        log_security_event(
+            "password_reset_completed",
+            request=self.request,
+            actor=user,
+            target_user=user,
+        )
+        return super().form_valid(form)
 
 
 class UserPasswordResetCompleteView(PasswordResetCompleteView):

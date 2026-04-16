@@ -131,3 +131,26 @@ DEFAULT_FROM_EMAIL = os.environ.get('DJANGO_DEFAULT_FROM_EMAIL', 'noreply@devsec
 LOGIN_THROTTLE_ACCOUNT_LIMIT = int(os.environ.get('DJANGO_LOGIN_THROTTLE_ACCOUNT_LIMIT', '5'))
 LOGIN_THROTTLE_IP_LIMIT = int(os.environ.get('DJANGO_LOGIN_THROTTLE_IP_LIMIT', '10'))
 LOGIN_THROTTLE_WINDOW_SECONDS = int(os.environ.get('DJANGO_LOGIN_THROTTLE_WINDOW_SECONDS', '300'))
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'audit': {
+            'format': '%(levelname)s %(name)s %(message)s',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'audit',
+        },
+    },
+    'loggers': {
+        'igihozo.audit': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}

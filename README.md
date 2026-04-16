@@ -16,6 +16,7 @@ This repository now includes a Django authentication app named `igihozo` that co
 - login throttling to reduce brute-force abuse
 - CSRF-safe AJAX profile update flow
 - safe redirect validation for authentication flows
+- audit logging for authentication and privilege-sensitive events
 - admin integration for profile records
 - tests for the main authentication flows
 
@@ -125,6 +126,23 @@ Authentication-related redirect targets are now validated before use:
 - user-controlled redirect values are checked with Django's allowed-host redirect utilities
 
 This keeps post-authentication navigation predictable and prevents open redirect behavior.
+
+## Audit Logging
+
+The application now writes structured audit events through the `igihozo.audit` logger for security-relevant actions:
+
+- registration
+- login success, failure, and temporary throttling
+- logout
+- password changes
+- password reset requests, completion, and invalid reset-link use
+- role, permission, and privilege-flag changes
+
+The logging intentionally avoids secrets:
+
+- raw passwords are never logged
+- password reset requests log a hashed identifier instead of the submitted email address
+- audit events include useful review data such as event type, outcome, actor, target user, request path, and client IP when available
 
 ## Testing
 

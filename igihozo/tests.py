@@ -1,3 +1,5 @@
+import json
+
 from django.contrib.auth.models import Group, Permission, User
 from django.core.cache import cache
 from django.core import mail
@@ -596,3 +598,88 @@ class OpenRedirectProtectionTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "signed out")
+
+
+class AuditLoggingTests(TestCase):
+    def setUp(self):
+        self.password = "ComplexPass123!"
+        self.user = User.objects.create_user(
+            username="audituser",
+            email="audit@example.com",
+            password=self.password,
+        )
+
+    def test_registration_logs_security_event(self):
+        with self.assertLogs("igihozo.audit", level="INFO") as captured:
+            self.client.post(
+                reverse("igihozo:register"),
+                {
+                    "username": "newaudituser",
+                    "first_name": "Audit",
+                    "last_name": "Student",
+                    "email": "newaudit@example.com",
+                    "display_name": "Audit Student",
+                    "bio": "Testing registration logging.",
+                    "password1": "StrongPass123!",
+                    "password2": "StrongPass123!",
+                },
+            )
+
+        self.assertTrue(any('"event": "registration"' in entry for entry in captured.output))
+
+    def test_login_success_and_failure_are_logged_without_passwords(self):
+        with self.assertLogs("igihozo.audit", level="INFO") as captured:
+            self.client.post(
+                reverse("igihozo:login"),
+                {"username": "audituser", "password": "WrongPassword123!"},
+            )
+            self.client.post(
+                reverse("igihozo:login"),
+                {"username": "audituser", "password": self.password},
+            )
+
+        joined_output = "\n".join(captured.output)
+        self.assertIn('"event": "login_failure"', joined_output)
+        self.assertIn('"event": "login_success"', joined_output)
+        self.assertNotIn("WrongPassword123!", joined_output)
+        self.assertNotIn(self.password, joined_output)
+
+    def test_logout_and_password_change_are_logged(self):
+        self.client.login(username="audituser", password=self.password)
+
+        with self.assertLogs("igihozo.audit", level="INFO") as captured:
+            self.client.post(
+                reverse("igihozo:password_change"),
+                {
+                    "old_password": self.password,
+                    "new_password1": "AuditNewPass123!",
+                    "new_password2": "AuditNewPass123!",
+                },
+            )
+            self.client.post(reverse("igihozo:logout"))
+
+        joined_output = "\n".join(captured.output)
+        self.assertIn('"event": "password_changed"', joined_output)
+        self.assertIn('"event": "logout"', joined_output)
+        self.assertNotIn(self.password, joined_output)
+
+    def test_password_reset_request_is_logged_with_hashed_identifier(self):
+        with self.assertLogs("igihozo.audit", level="INFO") as captured:
+            self.client.post(
+                reverse("igihozo:password_reset"),
+                {"email": "audit@example.com"},
+            )
+
+        log_message = captured.output[0]
+        payload = json.loads(log_message[log_message.index("{"):])
+        self.assertEqual(payload["event"], "password_reset_requested")
+        self.assertEqual(len(payload["details"]["submitted_email_hash"]), 12)
+        self.assertNotIn("audit@example.com", log_message)
+
+    def test_role_membership_changes_are_logged(self):
+        instructors_group = Group.objects.get(name="instructors")
+
+        with self.assertLogs("igihozo.audit", level="INFO") as captured:
+            self.user.groups.add(instructors_group)
+
+        self.assertTrue(any('"event": "role_membership_changed"' in entry for entry in captured.output))
